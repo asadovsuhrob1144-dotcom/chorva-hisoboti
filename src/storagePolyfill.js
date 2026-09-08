@@ -33,7 +33,47 @@ if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
   supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 }
 
+// ---------------------------------------------------------------------------
+// IMPORTANT: the login session must NEVER be synced through the shared
+// Supabase table — otherwise logging in on one device/browser would log in
+// EVERY visitor of the site automatically. The session is kept purely in
+// this browser's own localStorage, regardless of the "shared" flag the app
+// passes in. Every other key (animals, expenses, employees, etc.) still
+// goes through Supabase so the actual farm data is shared across devices.
+// ---------------------------------------------------------------------------
+const LOCAL_ONLY_KEYS = new Set(["livestock-session"]);
+const LOCAL_PREFIX = "livestock-app-local:";
+
+function localGet(key) {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_PREFIX + key);
+    if (raw === null) return null;
+    return { key, value: raw, shared: false };
+  } catch (e) {
+    return null;
+  }
+}
+
+function localSet(key, value) {
+  try {
+    window.localStorage.setItem(LOCAL_PREFIX + key, value);
+    return { key, value, shared: false };
+  } catch (e) {
+    return null;
+  }
+}
+
+function localDelete(key) {
+  try {
+    window.localStorage.removeItem(LOCAL_PREFIX + key);
+    return { key, deleted: true, shared: false };
+  } catch (e) {
+    return null;
+  }
+}
+
 async function get(key, shared = false) {
+  if (LOCAL_ONLY_KEYS.has(key)) return localGet(key);
   if (!supabase) return null;
   try {
     const { data, error } = await supabase
@@ -50,6 +90,7 @@ async function get(key, shared = false) {
 }
 
 async function set(key, value, shared = false) {
+  if (LOCAL_ONLY_KEYS.has(key)) return localSet(key, value);
   if (!supabase) return null;
   try {
     const { error } = await supabase
@@ -66,6 +107,7 @@ async function set(key, value, shared = false) {
 }
 
 async function del(key, shared = false) {
+  if (LOCAL_ONLY_KEYS.has(key)) return localDelete(key);
   if (!supabase) return null;
   try {
     const { error } = await supabase
