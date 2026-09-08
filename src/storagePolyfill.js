@@ -1,40 +1,64 @@
 // ---------------------------------------------------------------------------
-// window.storage polyfill
+// window.storage — Supabase-backed implementation
 // ---------------------------------------------------------------------------
 // The original app was built for the Claude.ai "Artifacts" sandbox, which
 // provides a built-in `window.storage` key/value API (get/set/delete/list).
-// That API does not exist on a normal website, so once deployed on its own
-// domain (e.g. Vercel) every call to window.storage would throw and crash
-// the app with a blank/white screen.
+// That API does not exist on a normal website. This file re-implements the
+// same interface on top of a Supabase Postgres table, so data is stored in
+// the cloud and is shared across every device/browser that opens the site.
 //
-// This file re-implements the same API on top of the browser's own
-// localStorage, so the app keeps working once it's a real, standalone site.
-//
-// NOTE: localStorage is per-browser / per-device. The "shared" flag from the
-// original API (meant to sync data across every user of the artifact) is
-// kept only for interface-compatibility — it does NOT sync data between
-// different computers or phones. Each device will have its own local data.
+// Required setup (see the accompanying instructions):
+//   1. A Supabase project.
+//   2. A table called "kv_store" with columns: key (text), shared (bool),
+//      value (text), updated_at (timestamptz).
+//   3. Two environment variables set at build time:
+//        VITE_SUPABASE_URL
+//        VITE_SUPABASE_ANON_KEY
 // ---------------------------------------------------------------------------
 
-const PREFIX = "livestock-app-storage:";
+import { createClient } from "@supabase/supabase-js";
 
-function fullKey(key, shared) {
-  return `${PREFIX}${shared ? "shared" : "personal"}:${key}`;
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+let supabase = null;
+let configError = null;
+
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  configError =
+    "Supabase sozlanmagan: VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY muhit o'zgaruvchilari topilmadi.";
+  // eslint-disable-next-line no-console
+  console.error(configError);
+} else {
+  supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 }
 
 async function get(key, shared = false) {
+  if (!supabase) return null;
   try {
-    const raw = window.localStorage.getItem(fullKey(key, shared));
-    if (raw === null) return null;
-    return { key, value: raw, shared };
+    const { data, error } = await supabase
+      .from("kv_store")
+      .select("value")
+      .eq("key", key)
+      .eq("shared", shared)
+      .maybeSingle();
+    if (error || !data) return null;
+    return { key, value: data.value, shared };
   } catch (e) {
     return null;
   }
 }
 
 async function set(key, value, shared = false) {
+  if (!supabase) return null;
   try {
-    window.localStorage.setItem(fullKey(key, shared), value);
+    const { error } = await supabase
+      .from("kv_store")
+      .upsert(
+        { key, shared, value, updated_at: new Date().toISOString() },
+        { onConflict: "key,shared" }
+      );
+    if (error) return null;
     return { key, value, shared };
   } catch (e) {
     return null;
@@ -42,8 +66,14 @@ async function set(key, value, shared = false) {
 }
 
 async function del(key, shared = false) {
+  if (!supabase) return null;
   try {
-    window.localStorage.removeItem(fullKey(key, shared));
+    const { error } = await supabase
+      .from("kv_store")
+      .delete()
+      .eq("key", key)
+      .eq("shared", shared);
+    if (error) return null;
     return { key, deleted: true, shared };
   } catch (e) {
     return null;
@@ -51,16 +81,15 @@ async function del(key, shared = false) {
 }
 
 async function list(prefix = "", shared = false) {
+  if (!supabase) return null;
   try {
-    const searchPrefix = fullKey(prefix, shared);
-    const keys = [];
-    for (let i = 0; i < window.localStorage.length; i++) {
-      const k = window.localStorage.key(i);
-      if (k && k.startsWith(searchPrefix)) {
-        keys.push(k.slice(fullKey("", shared).length));
-      }
-    }
-    return { keys, prefix, shared };
+    const { data, error } = await supabase
+      .from("kv_store")
+      .select("key")
+      .eq("shared", shared)
+      .like("key", `${prefix}%`);
+    if (error || !data) return null;
+    return { keys: data.map((r) => r.key), prefix, shared };
   } catch (e) {
     return null;
   }
